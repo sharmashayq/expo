@@ -21,4 +21,225 @@ To create a new project, run the following command:
 
 ## Next step
 
-You have a project. Now it's time to set up your development environment so that you can start developing.
+You have a project. Now it's time to set up your development environment so that you can start developing.// App architecture:
+// - React frontend (with Tailwind CSS)
+// - Firebase backend (Auth + Storage + Firestore)
+// - QR Code generation for shared links
+// - Live video streaming with gift sending (coins system)
+
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile, sendEmailVerification } from 'firebase/auth';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getFirestore, doc, setDoc, collection, getDocs, addDoc } from 'firebase/firestore';
+import QRCode from 'qrcode.react';
+
+const firebaseConfig = {
+  apiKey: 'YOUR_API_KEY',
+  authDomain: 'YOUR_AUTH_DOMAIN',
+  projectId: 'YOUR_PROJECT_ID',
+  storageBucket: 'YOUR_STORAGE_BUCKET',
+  messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+  appId: 'YOUR_APP_ID'
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const storage = getStorage(app);
+const db = getFirestore(app);
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [isSignup, setIsSignup] = useState(false);
+  const [file, setFile] = useState(null);
+  const [uploadedVideos, setUploadedVideos] = useState([]);
+  const [uploadedImages, setUploadedImages] = useState([]);
+  const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const adminEmail = 'sharmarkedaacad@gmail.com';
+
+  useEffect(() => {
+    onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        await user.reload();
+        if (user.emailVerified) {
+          setUser(user);
+          loadVideos(user);
+          loadImages(user);
+        } else {
+          setUser(null);
+          alert('Please verify your email before proceeding.');
+        }
+      } else {
+        setUser(null);
+      }
+    });
+  }, []);
+
+  const signup = async () => {
+    try {
+      const res = await createUserWithEmailAndPassword(auth, email, password);
+      await updateProfile(res.user, {
+        displayName: `${firstName} ${lastName}`
+      });
+      await setDoc(doc(db, 'users', res.user.uid), {
+        firstName,
+        lastName,
+        email,
+        coins: 0,
+        isBlocked: false
+      });
+      await sendEmailVerification(res.user);
+      alert('Email verification sent. Please check your inbox.');
+    } catch (error) {
+      setError(error.message);
+    }
+  };
+
+  const login = async () => {
+    try {
+      const res = await signInWithEmailAndPassword(auth, email, password);
+      await res.user.reload();
+      if (res.user.emailVerified) {
+        const userDoc = await getDocs(collection(db, 'users'));
+        const userData = userDoc.docs.find(doc => doc.id === res.user.uid)?.data();
+        if (userData?.isBlocked) {
+          setError('Your account has been blocked.');
+          await signOut(auth);
+          return;
+        }
+        setUser(res.user);
+        loadVideos(res.user);
+        loadImages(res.user);
+      } else {
+        setError('Please verify your email first.');
+        await signOut(auth);
+      }
+    } catch (error) {
+      setError(error.message);
+    }
+  };
+
+  const logout = () => signOut(auth);
+
+  const uploadFile = async () => {
+    if (!file) return;
+    const type = file.type.startsWith('video') ? 'videos' : 'images';
+
+    if (type === 'videos') {
+      const videoDuration = await new Promise(resolve => {
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+        video.onloadedmetadata = () => resolve(video.duration);
+        video.src = URL.createObjectURL(file);
+      });
+      if (videoDuration > 120) {
+        alert('Only short videos (up to 2 minutes) are allowed.');
+        return;
+      }
+    }
+
+    const fileRef = ref(storage, `${user.uid}/${type}/${file.name}`);
+    await uploadBytes(fileRef, file);
+    const url = await getDownloadURL(fileRef);
+    const docRef = await addDoc(collection(db, type), { url, owner: user.uid, name: file.name });
+    const qrLink = `${window.location.origin}/view/${docRef.id}`;
+    alert(`File uploaded. Access QR code here: ${qrLink}`);
+    type === 'videos' ? loadVideos(user) : loadImages(user);
+  };
+
+  const loadVideos = async (u) => {
+    const videosSnapshot = await getDocs(collection(db, 'videos'));
+    const videos = videosSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(f => f.owner === u.uid);
+    setUploadedVideos(videos);
+  };
+
+  const loadImages = async (u) => {
+    const imagesSnapshot = await getDocs(collection(db, 'images'));
+    const images = imagesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(f => f.owner === u.uid);
+    setUploadedImages(images);
+  };
+
+  const filterMedia = (mediaList) => {
+    return mediaList.filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  };
+
+  if (!user) {
+    return (
+      <div className="p-6 max-w-md mx-auto">
+        <h1 className="text-xl font-bold mb-4">{isSignup ? 'Sign Up' : 'Login'}</h1>
+
+        {isSignup && (
+          <>
+            <input placeholder="First Name" value={firstName} onChange={e => setFirstName(e.target.value)} className="border p-2 w-full mb-2" />
+            <input placeholder="Last Name" value={lastName} onChange={e => setLastName(e.target.value)} className="border p-2 w-full mb-2" />
+          </>
+        )}
+
+        <input placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} className="border p-2 w-full mb-2" />
+        <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} className="border p-2 w-full mb-4" />
+
+        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+
+        {isSignup ? (
+          <>
+            <button onClick={signup} className="bg-green-500 text-white px-4 py-2">Next</button>
+            <p className="mt-2">Already have an account? <button className="text-blue-500 underline" onClick={() => setIsSignup(false)}>Sign In</button></p>
+          </>
+        ) : (
+          <>
+            <button onClick={login} className="bg-blue-500 text-white px-4 py-2">Next</button>
+            <p className="mt-2">Don't have an account? <button className="text-blue-500 underline" onClick={() => setIsSignup(true)}>Sign Up</button></p>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 max-w-2xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Welcome, {user.displayName || user.email}</h1>
+      <p className="mb-4 text-gray-600">Live Stream & Video App</p>
+
+      <input type="text" placeholder="Search by name..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="border p-2 w-full mb-4" />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div className="border rounded-xl p-4 shadow">
+          <h2 className="font-semibold text-lg mb-2">📷 Upload Video/Image</h2>
+          <input type="file" accept="video/*,image/*" onChange={e => setFile(e.target.files[0])} className="mb-2 w-full" />
+          <button onClick={uploadFile} className="bg-blue-500 text-white px-4 py-2 w-full">Upload</button>
+        </div>
+      </div>
+
+      <button onClick={logout} className="bg-red-500 text-white px-4 py-2 mb-4">Logout</button>
+
+      <h2 className="text-xl font-semibold mb-2">Your Uploaded Videos:</h2>
+      <ul>
+        {filterMedia(uploadedVideos).map((v, idx) => (
+          <li key={idx} className="mb-4 border rounded p-4 shadow">
+            <video src={v.url} controls className="w-full max-h-64"></video>
+            <p className="text-sm mt-2">{v.name}</p>
+            <QRCode value={`${window.location.origin}/view/${v.id}`} size={128} className="mt-2" />
+          </li>
+        ))}
+      </ul>
+
+      <h2 className="text-xl font-semibold mb-2 mt-6">Your Uploaded Images:</h2>
+      <ul className="grid grid-cols-2 gap-4">
+        {filterMedia(uploadedImages).map((img, idx) => (
+          <li key={idx} className="border rounded p-2 shadow">
+            <img src={img.url} alt={img.name} className="w-full h-auto rounded" />
+            <p className="text-sm mt-1">{img.name}</p>
+            <QRCode value={`${window.location.origin}/view/${img.id}`} size={128} className="mt-2" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
